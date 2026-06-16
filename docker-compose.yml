@@ -1,0 +1,317 @@
+version: "3.9"
+
+# ============================================================
+# Smart Energy Management Gateway
+# Run: docker compose up -d --build
+# ============================================================
+
+x-mqtt-env: &mqtt-env
+  MQTT_BROKER: mosquitto
+  MQTT_PORT: "${MQTT_PORT:-1883}"
+  MQTT_USERNAME: "${MQTT_USERNAME:-energy_user}"
+  MQTT_PASSWORD: "${MQTT_PASSWORD:-energy_pass123}"
+
+x-influx-env: &influx-env
+  INFLUXDB_URL: "${INFLUXDB_URL:-http://influxdb:8086}"
+  INFLUXDB_TOKEN: "${INFLUXDB_TOKEN:-energy-super-secret-token-2026}"
+  INFLUXDB_ORG: "${INFLUXDB_ORG:-smart-energy}"
+  INFLUXDB_BUCKET: "${INFLUXDB_BUCKET:-energy_data}"
+
+services:
+
+  # ── MQTT Broker (with auth) ──────────────────────────────────────────────
+  mosquitto-init:
+    image: eclipse-mosquitto:2.0
+    container_name: mosquitto-init
+    volumes:
+      - mosquitto-config:/mosquitto/config
+    entrypoint: >
+      sh -c "
+        cp /tmp/mosquitto.conf /mosquitto/config/mosquitto.conf &&
+        mosquitto_passwd -b /mosquitto/config/passwd
+          $${MQTT_USERNAME:-energy_user}
+          $${MQTT_PASSWORD:-energy_pass123} &&
+        echo 'Mosquitto password file created'
+      "
+    environment:
+      MQTT_USERNAME: "${MQTT_USERNAME:-energy_user}"
+      MQTT_PASSWORD: "${MQTT_PASSWORD:-energy_pass123}"
+    configs:
+      - source: mosquitto_conf
+        target: /tmp/mosquitto.conf
+    restart: "no"
+
+  mosquitto:
+    image: eclipse-mosquitto:2.0
+    container_name: mosquitto
+    depends_on:
+      mosquitto-init:
+        condition: service_completed_successfully
+    ports:
+      - "1883:1883"
+    volumes:
+      - mosquitto-config:/mosquitto/config
+      - mosquitto-data:/mosquitto/data
+      - mosquitto-logs:/mosquitto/log
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "mosquitto_sub", "-h", "localhost", "-p", "1883",
+             "-u", "${MQTT_USERNAME:-energy_user}",
+             "-P", "${MQTT_PASSWORD:-energy_pass123}",
+             "-t", "$$SYS/#", "-C", "1", "--quiet"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  # ── InfluxDB ─────────────────────────────────────────────────────────────
+  influxdb:
+    image: influxdb:2.7
+    container_name: influxdb
+    ports:
+      - "8086:8086"
+    environment:
+      DOCKER_INFLUXDB_INIT_MODE: setup
+      DOCKER_INFLUXDB_INIT_USERNAME: "${INFLUXDB_ADMIN_USER:-admin}"
+      DOCKER_INFLUXDB_INIT_PASSWORD: "${INFLUXDB_ADMIN_PASSWORD:-admin_pass_2026}"
+      DOCKER_INFLUXDB_INIT_ORG: "${INFLUXDB_ORG:-smart-energy}"
+      DOCKER_INFLUXDB_INIT_BUCKET: "${INFLUXDB_BUCKET:-energy_data}"
+      DOCKER_INFLUXDB_INIT_ADMIN_TOKEN: "${INFLUXDB_ADMIN_TOKEN:-energy-super-secret-token-2026}"
+    volumes:
+      - influxdb-data:/var/lib/influxdb2
+      - influxdb-config:/etc/influxdb2
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "influx", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  # ── Grafana ───────────────────────────────────────────────────────────────
+  grafana:
+    image: grafana/grafana:11.3.0
+    container_name: grafana
+    depends_on:
+      influxdb:
+        condition: service_healthy
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: "${GRAFANA_ADMIN_USER:-admin}"
+      GF_SECURITY_ADMIN_PASSWORD: "${GRAFANA_ADMIN_PASSWORD:-grafana_pass_2026}"
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /etc/grafana/provisioning/dashboards/energy_dashboard.json
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/api/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  # ── Energy Gateway ────────────────────────────────────────────────────────
+  energy-gateway:
+    build:
+      context: ./energy_gateway
+      dockerfile: Dockerfile
+    container_name: energy-gateway
+    depends_on:
+      mosquitto:
+        condition: service_healthy
+      influxdb:
+        condition: service_healthy
+    environment:
+      <<: [*mqtt-env, *influx-env]
+      OVERLOAD_THRESHOLD_WATT: "${OVERLOAD_THRESHOLD_WATT:-3500.0}"
+      SUMMARY_INTERVAL: "${SUMMARY_INTERVAL:-5}"
+      METER_OFFLINE_TIMEOUT: "${METER_OFFLINE_TIMEOUT:-30}"
+      GATEWAY_STATE_FILE: /tmp/gateway_state.json
+    volumes:
+      - gateway-state:/tmp
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import os; assert os.path.exists('/tmp/gateway_state.json')"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  # ── REST API ──────────────────────────────────────────────────────────────
+  energy-api:
+    build:
+      context: ./energy_api
+      dockerfile: Dockerfile
+    container_name: energy-api
+    depends_on:
+      mosquitto:
+        condition: service_healthy
+      energy-gateway:
+        condition: service_started
+    ports:
+      - "8000:8000"
+    environment:
+      <<: *mqtt-env
+      GATEWAY_STATE_FILE: /tmp/gateway_state.json
+      API_HOST: "0.0.0.0"
+      API_PORT: "8000"
+    volumes:
+      - gateway-state:/tmp
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+  # ── Smart Meter: HVAC ─────────────────────────────────────────────────────
+  meter-hvac:
+    build:
+      context: ./smart_meter
+      dockerfile: Dockerfile
+    container_name: meter-hvac
+    depends_on:
+      mosquitto:
+        condition: service_healthy
+    environment:
+      <<: *mqtt-env
+      LOAD_ID: "${HVAC_LOAD_ID:-hvac}"
+      DEVICE_ID: "${HVAC_DEVICE_ID:-meter-hvac}"
+      BASE_POWER: "${HVAC_BASE_POWER:-1200.0}"
+      PRIORITY: "${HVAC_PRIORITY:-low}"
+      PUBLISH_INTERVAL: "${PUBLISH_INTERVAL:-5}"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import socket; socket.create_connection(('mosquitto', 1883), 3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+  # ── Smart Meter: Lighting ─────────────────────────────────────────────────
+  meter-lighting:
+    build:
+      context: ./smart_meter
+      dockerfile: Dockerfile
+    container_name: meter-lighting
+    depends_on:
+      mosquitto:
+        condition: service_healthy
+    environment:
+      <<: *mqtt-env
+      LOAD_ID: "${LIGHTING_LOAD_ID:-lighting}"
+      DEVICE_ID: "${LIGHTING_DEVICE_ID:-meter-lighting}"
+      BASE_POWER: "${LIGHTING_BASE_POWER:-400.0}"
+      PRIORITY: "${LIGHTING_PRIORITY:-medium}"
+      PUBLISH_INTERVAL: "${PUBLISH_INTERVAL:-5}"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import socket; socket.create_connection(('mosquitto', 1883), 3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+  # ── Smart Meter: Plug ─────────────────────────────────────────────────────
+  meter-plug:
+    build:
+      context: ./smart_meter
+      dockerfile: Dockerfile
+    container_name: meter-plug
+    depends_on:
+      mosquitto:
+        condition: service_healthy
+    environment:
+      <<: *mqtt-env
+      LOAD_ID: "${PLUG_LOAD_ID:-plug}"
+      DEVICE_ID: "${PLUG_DEVICE_ID:-meter-plug}"
+      BASE_POWER: "${PLUG_BASE_POWER:-800.0}"
+      PRIORITY: "${PLUG_PRIORITY:-low}"
+      PUBLISH_INTERVAL: "${PUBLISH_INTERVAL:-5}"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import socket; socket.create_connection(('mosquitto', 1883), 3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+  # ── Load Actuator: HVAC ───────────────────────────────────────────────────
+  load-hvac:
+    build:
+      context: ./load_actuator
+      dockerfile: Dockerfile
+    container_name: load-hvac
+    depends_on:
+      mosquitto:
+        condition: service_healthy
+    environment:
+      <<: *mqtt-env
+      LOAD_ID: "${HVAC_LOAD_ID:-hvac}"
+      DEVICE_ID: "load-hvac"
+    restart: unless-stopped
+
+  # ── Load Actuator: Lighting ───────────────────────────────────────────────
+  load-lighting:
+    build:
+      context: ./load_actuator
+      dockerfile: Dockerfile
+    container_name: load-lighting
+    depends_on:
+      mosquitto:
+        condition: service_healthy
+    environment:
+      <<: *mqtt-env
+      LOAD_ID: "${LIGHTING_LOAD_ID:-lighting}"
+      DEVICE_ID: "load-lighting"
+    restart: unless-stopped
+
+  # ── Load Actuator: Plug ───────────────────────────────────────────────────
+  load-plug:
+    build:
+      context: ./load_actuator
+      dockerfile: Dockerfile
+    container_name: load-plug
+    depends_on:
+      mosquitto:
+        condition: service_healthy
+    environment:
+      <<: *mqtt-env
+      LOAD_ID: "${PLUG_LOAD_ID:-plug}"
+      DEVICE_ID: "load-plug"
+    restart: unless-stopped
+
+  # ── Solar Simulator ───────────────────────────────────────────────────────
+  solar-simulator:
+    build:
+      context: ./solar_simulator
+      dockerfile: Dockerfile
+    container_name: solar-simulator
+    depends_on:
+      mosquitto:
+        condition: service_healthy
+    environment:
+      <<: *mqtt-env
+      SOLAR_DEVICE_ID: "${SOLAR_DEVICE_ID:-solar-simulator}"
+      SOLAR_PEAK_POWER: "${SOLAR_PEAK_POWER:-1500.0}"
+      SOLAR_PUBLISH_INTERVAL: "${SOLAR_PUBLISH_INTERVAL:-5}"
+    restart: unless-stopped
+
+# ── Volumes ───────────────────────────────────────────────────────────────────
+volumes:
+  influxdb-data:
+  influxdb-config:
+  grafana-data:
+  mosquitto-data:
+  mosquitto-logs:
+  mosquitto-config:
+  gateway-state:
+
+# ── Configs ───────────────────────────────────────────────────────────────────
+configs:
+  mosquitto_conf:
+    file: ./mosquitto/config/mosquitto.conf

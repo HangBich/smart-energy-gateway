@@ -1,0 +1,192 @@
+{
+  "title": "Smart Energy Management Gateway",
+  "uid": "smart-energy-main",
+  "schemaVersion": 38,
+  "version": 1,
+  "refresh": "5s",
+  "time": { "from": "now-30m", "to": "now" },
+  "panels": [
+    {
+      "id": 1,
+      "title": "⚡ Total Power Consumption (W)",
+      "type": "timeseries",
+      "gridPos": { "x": 0, "y": 0, "w": 12, "h": 8 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "watt",
+          "color": { "mode": "palette-classic" },
+          "custom": { "lineWidth": 2, "fillOpacity": 15 },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 2800 },
+              { "color": "red", "value": 3500 }
+            ]
+          }
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "influxdb", "uid": "${DS_INFLUXDB}" },
+          "query": "from(bucket: \"energy_data\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r._measurement == \"energy_summary\")\n  |> filter(fn: (r) => r._field == \"total_power_watt\" or r._field == \"solar_power_watt\" or r._field == \"grid_power_watt\")\n  |> aggregateWindow(every: v.windowPeriod, fn: mean, createEmpty: false)"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "title": "☀️ Solar Power Generation (W)",
+      "type": "timeseries",
+      "gridPos": { "x": 12, "y": 0, "w": 12, "h": 8 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "watt",
+          "color": { "fixedColor": "#F9C74F", "mode": "fixed" },
+          "custom": { "lineWidth": 2, "fillOpacity": 20 }
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "influxdb", "uid": "${DS_INFLUXDB}" },
+          "query": "from(bucket: \"energy_data\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r._measurement == \"solar_telemetry\")\n  |> filter(fn: (r) => r._field == \"power_watt\")\n  |> aggregateWindow(every: v.windowPeriod, fn: mean, createEmpty: false)"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "title": "🔌 Power per Load (W)",
+      "type": "timeseries",
+      "gridPos": { "x": 0, "y": 8, "w": 16, "h": 8 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "watt",
+          "custom": { "lineWidth": 2, "fillOpacity": 10 }
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "influxdb", "uid": "${DS_INFLUXDB}" },
+          "query": "from(bucket: \"energy_data\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r._measurement == \"meter_telemetry\")\n  |> filter(fn: (r) => r._field == \"power_watt\")\n  |> aggregateWindow(every: v.windowPeriod, fn: mean, createEmpty: false)\n  |> map(fn: (r) => ({ r with _field: r.load_id }))"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "title": "🔴 Overload Status",
+      "type": "stat",
+      "gridPos": { "x": 16, "y": 8, "w": 8, "h": 4 },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            { "type": "value", "options": { "0": { "text": "✅ Normal", "color": "green" }, "1": { "text": "⚠️ OVERLOAD", "color": "red" } } }
+          ],
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "red", "value": 1 }] }
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "influxdb", "uid": "${DS_INFLUXDB}" },
+          "query": "from(bucket: \"energy_data\")\n  |> range(start: -1m)\n  |> filter(fn: (r) => r._measurement == \"energy_summary\" and r._field == \"overload\")\n  |> last()"
+        }
+      ],
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "background" }
+    },
+    {
+      "id": 5,
+      "title": "📊 Grid Power (W)",
+      "type": "stat",
+      "gridPos": { "x": 16, "y": 12, "w": 8, "h": 4 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "watt",
+          "color": { "mode": "thresholds" },
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "yellow", "value": 2000 }, { "color": "red", "value": 3000 }] }
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "influxdb", "uid": "${DS_INFLUXDB}" },
+          "query": "from(bucket: \"energy_data\")\n  |> range(start: -1m)\n  |> filter(fn: (r) => r._measurement == \"energy_summary\" and r._field == \"grid_power_watt\")\n  |> last()"
+        }
+      ],
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "background" }
+    },
+    {
+      "id": 6,
+      "title": "💡 Load Switch Status",
+      "type": "stat",
+      "gridPos": { "x": 0, "y": 16, "w": 12, "h": 6 },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            { "type": "value", "options": { "0": { "text": "OFF", "color": "red" }, "1": { "text": "ON", "color": "green" } } }
+          ],
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "red", "value": null }, { "color": "green", "value": 1 }] }
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "influxdb", "uid": "${DS_INFLUXDB}" },
+          "query": "from(bucket: \"energy_data\")\n  |> range(start: -1m)\n  |> filter(fn: (r) => r._measurement == \"load_status\" and r._field == \"switch\")\n  |> last()\n  |> map(fn: (r) => ({ r with _field: r.load_id }))"
+        }
+      ],
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "background", "orientation": "horizontal" }
+    },
+    {
+      "id": 7,
+      "title": "⚠️ Overload Events Count",
+      "type": "timeseries",
+      "gridPos": { "x": 12, "y": 16, "w": 12, "h": 6 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": { "fixedColor": "#E84855", "mode": "fixed" },
+          "custom": { "drawStyle": "bars", "fillOpacity": 60 }
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "influxdb", "uid": "${DS_INFLUXDB}" },
+          "query": "from(bucket: \"energy_data\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r._measurement == \"gateway_events\" and r.event_type == \"overload_detected\")\n  |> filter(fn: (r) => r._field == \"value\")\n  |> aggregateWindow(every: 1m, fn: count, createEmpty: false)"
+        }
+      ]
+    },
+    {
+      "id": 8,
+      "title": "📋 Recent Events",
+      "type": "table",
+      "gridPos": { "x": 0, "y": 22, "w": 24, "h": 8 },
+      "fieldConfig": {
+        "defaults": { "custom": { "displayMode": "color-text" } },
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "severity" }, "properties": [{ "id": "custom.displayMode", "value": "color-background" }, { "id": "mappings", "value": [{ "type": "value", "options": { "critical": { "color": "red", "index": 0 }, "warning": { "color": "yellow", "index": 1 }, "info": { "color": "green", "index": 2 } } }] }] }
+        ]
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "influxdb", "uid": "${DS_INFLUXDB}" },
+          "query": "from(bucket: \"energy_data\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r._measurement == \"gateway_events\")\n  |> filter(fn: (r) => r._field == \"message\")\n  |> keep(columns: [\"_time\", \"event_type\", \"severity\", \"load_id\", \"_value\"])\n  |> rename(columns: {_value: \"message\", _time: \"time\"})\n  |> sort(columns: [\"time\"], desc: true)\n  |> limit(n: 50)"
+        }
+      ],
+      "options": { "sortBy": [{ "displayName": "time", "desc": true }] }
+    }
+  ],
+  "templating": {
+    "list": [
+      {
+        "name": "DS_INFLUXDB",
+        "type": "datasource",
+        "pluginId": "influxdb",
+        "hide": 0
+      }
+    ]
+  }
+}
