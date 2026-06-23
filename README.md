@@ -383,9 +383,9 @@ smart-energy-gateway/
 
 | Thành viên | Nhiệm vụ |
 |------------|----------|
-| Thành viên 1 | `smart_meter/`, `load_actuator/`, `solar_simulator/` — thiết kế MQTT topics và message format |
-| Thành viên 2 | `energy_gateway/` — gateway, rule engine, InfluxDB integration, state store |
-| Thành viên 3 | `energy_api/`, `docker-compose.yml`, Grafana dashboard, README, unit tests |
+| Vũ Khương Duy | `smart_meter/`, `load_actuator/`, `solar_simulator/` — thiết kế MQTT topics và message format |
+| Trần Hoàng Long | `energy_gateway/` — gateway, rule engine, InfluxDB integration, state store |
+| Nguyễn Thị Bich Hằng | `energy_api/`, `docker-compose.yml`, Grafana dashboard, README, unit tests |
 
 ---
 
